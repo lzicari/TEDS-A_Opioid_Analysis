@@ -109,7 +109,7 @@ rm(teds_a)
 gc()
 ```
 
-Joining in state level confounders and policy panelfrom exploratory rmd (policy datafram and tidy census chunks)
+Joining in state level confounders and policy panel
 
 ```{r Introducing State Level Confounders}
 final_micro_data = teds_micro |>
@@ -119,9 +119,9 @@ final_micro_data = teds_micro |>
     Policy_Group = case_when(
       ADMYR >= RCL_Year ~ "RCL + MCL",
       ADMYR >= MCL_Year & (ADMYR < RCL_Year | RCL_Year == 9999) ~ "MCL Only",
-      TRUE ~ "Full Prohibition"
+      TRUE ~ "No Cannabis policies"
     ),
-    Policy_Group = factor(Policy_Group, levels = c("Full Prohibition", "MCL Only", "RCL + MCL")),
+    Policy_Group = factor(Policy_Group, levels = c("No Cannabis policies", "MCL Only", "RCL + MCL")),
     time_to_treatment = ADMYR - RCL_Year,
     event_time = case_when(
       time_to_treatment <= -5 ~ -5,
@@ -130,6 +130,9 @@ final_micro_data = teds_micro |>
       TRUE                    ~ time_to_treatment
     )
   )
+
+rm(teds_micro, policy_reference, confounders_panel)
+gc()
 ```
 
 ## Study Population Flow Chart
@@ -182,7 +185,7 @@ table1_final_data = bind_rows(
 
 table1_styled = table1_final_data |>
   select(-Variable) |> 
-  kbl(col.names = c("Demographic", "Full Prohibition", "MCL Only", "RCL + MCL", "Total"),
+  kbl(col.names = c("Demographic", "No Cannabis policies", "MCL Only", "RCL + MCL", "Total"),
       booktabs = TRUE, caption = "Table 1: Demographic Characteristics") |>
   kable_classic(full_width = F, html_font = "Arial") |>
   pack_rows("Age Group", 1, 3) |>
@@ -192,21 +195,31 @@ table1_styled = table1_final_data |>
   pack_rows("Education", 14, 16)   # Less than HS, HS/GED, Some College+
 
 save_kable(table1_styled, file = "Table1_V2.pdf")
+
+rm(teds_prep)
+gc()
 ```
 
 ## Event Study Plot (Figure 2)
 
 ```{r}
-# Model for Event Study using the new condensed categories
+# 1. Create a dedicated subset for the model to prevent environment errors
+event_study_data <- final_micro_data |> 
+  filter(event_time > -10)
+
+# 2. Run the model on the new object
 event_study_micro = feols(
   is_opioid ~ i(event_time, ref = -1) + 
               state_poverty_rate + state_unemployment_rate | 
               STFIPS + ADMYR + age_group + SEX + race_condensed + eth_condensed + edu_condensed,
-  data = filter(final_micro_data, event_time > -10),
+  data = event_study_data,
   cluster = ~STFIPS
 )
 
-# Export as PNG for high resolution
+# Remove the subsetted data after the model runs to save RAM
+rm(event_study_data) 
+
+# 3. Export as PNG for high resolution
 png("Figure2_EventStudy_Final_V2.png", width = 1600, height = 1000, res = 200)
 
 iplot(event_study_micro, 
@@ -220,25 +233,29 @@ iplot(event_study_micro,
 abline(h = 0, col = "red", lty = 2)
 
 dev.off()
+
+rm(event_study_data)
+gc()
 ```
+
 
 
 ## Models
 
 ```{r}
 # 1. Crude Model
-micro_did_crude = feols(is_opioid ~ i(Policy_Group, ref = "Full Prohibition") | STFIPS + ADMYR, 
+micro_did_crude = feols(is_opioid ~ i(Policy_Group, ref = "No Cannabis policies") | STFIPS + ADMYR, 
                         data = final_micro_data, cluster = ~STFIPS)
 
 # 2. Adjusted Model
-micro_did_model = feols(is_opioid ~ i(Policy_Group, ref = "Full Prohibition") + 
+micro_did_model = feols(is_opioid ~ i(Policy_Group, ref = "No Cannabis policies") + 
                         state_poverty_rate + state_unemployment_rate + 
                         i(age_group) + i(SEX) + i(race_condensed) + 
                         i(eth_condensed) + i(edu_condensed) | STFIPS + ADMYR,
                         data = final_micro_data, cluster = ~STFIPS)
 
 # 3. Interaction Model
-micro_did_interaction = feols(is_opioid ~ i(Policy_Group, age_group, ref = "Full Prohibition", ref2 = "18-34") + 
+micro_did_interaction = feols(is_opioid ~ i(Policy_Group, age_group, ref = "No Cannabis policies", ref2 = "18-34") + 
                               state_poverty_rate + state_unemployment_rate + 
                               i(SEX) + i(race_condensed) + i(eth_condensed) + i(edu_condensed) | STFIPS + ADMYR,
                               data = final_micro_data, cluster = ~STFIPS)
@@ -273,8 +290,10 @@ table2_final = table2_raw |>
   gsub("p = 0.000", "p < 0.001", .) |>
   kable_classic(full_width = F) |>
   kable_styling(latex_options = c("scale_down"), font_size = 7) |>
-  pack_rows("Policy & Economics", 1, 4) |>
-  pack_rows("Age & Sex", 5, 7) |>
+  pack_rows("Cannabis Policy", 1, 2) |> 
+  pack_rows("Economic Indicators", 3, 4) |>
+  pack_rows("Age Group", 5, 6) |> 
+  pack_rows("Sex", 7, 7) |>
   pack_rows("Race & Ethnicity", 8, 13) |>
   pack_rows("Education", 14, 15)
 
@@ -346,10 +365,17 @@ trend_data = final_micro_data |>
 
 ggplot(trend_data, aes(x = ADMYR, y = prop_opioid, color = Policy_Group, linetype = Policy_Group)) +
   geom_line(size = 1) + geom_point() +
-  scale_color_manual(values = c("Full Prohibition" = "#636363", "MCL Only" = "#D55E00", "RCL + MCL" = "#0072B2")) +
-  scale_linetype_manual(values = c("dashed", "solid", "solid")) +
+  scale_color_manual(values = c("No Cannabis policies" = "#636363", "MCL Only" = "#D55E00", "RCL + MCL" = "#0072B2")) +
+  scale_linetype_manual(values = c("No Cannabis policies" = "dashed", 
+                                 "MCL Only" = "solid", 
+                                 "RCL + MCL" = "solid")) +
   theme_minimal() + labs(title = "Opioid Admission Trends (2010-2023)", y = "Opioid Admissions (%)")
 
 ggsave("Figure5_V2.png", width = 10, height = 6)
+```
+
+```{r}
+rm(final_micro_data)
+gc()
 ```
 
